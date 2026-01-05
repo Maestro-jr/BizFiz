@@ -3,8 +3,8 @@
 """
 Distributed File System
 Server 3
-Marcelo Sanches
-Jan 2019
+Fonyuy Berka
+Jan 2026
 
 MODIFIED:
 - DFS3 serves files from:

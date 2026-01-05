@@ -3,8 +3,8 @@
 """
 Distributed File System
 Server 4
-Marcelo Sanches
-Jan 2019
+Fonyuy Berka
+Jan 2026
 Modified: Fixed server root directory
 """
 

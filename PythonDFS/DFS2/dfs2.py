@@ -3,8 +3,8 @@
 """
 Distributed File System
 Server 2
-Marcelo Sanches
-Jan 2019
+Fonyuy Berka
+Jan 2026
 
 MODIFIED:
 - DFS2 now serves files from:
