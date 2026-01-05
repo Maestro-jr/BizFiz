@@ -12,6 +12,10 @@ import time
 import socket
 import threading
 import hashlib
+from pathlib import Path
+
+BASE_DIR = Path(__file__).parent
+CONFIG_PATH = BASE_DIR / "dfc.conf"
 
 # ---------------- ARG CHECK ---------------- #
 
@@ -19,18 +23,17 @@ def check_args():
     if len(sys.argv) != 2 or sys.argv[1].lower() != 'dfc.conf':
         print("USAGE: py dfc.py dfc.conf")
         sys.exit()
-    if not os.path.isfile(sys.argv[1]):
-        print("ERROR: dfc.conf not found.")
+    if not CONFIG_PATH.is_file():
+        print(f"ERROR: {CONFIG_PATH} not found.")
         sys.exit()
 
 # ---------------- AUTH ---------------- #
 
 def load_auth():
-    with open('dfc.conf', 'r', encoding='cp1252') as fh:
+    with open(CONFIG_PATH, 'r', encoding='cp1252') as fh:
         users = re.findall(r'Username: .*', fh.read())
-    with open('dfc.conf', 'r', encoding='cp1252') as fh:
+    with open(CONFIG_PATH, 'r', encoding='cp1252') as fh:
         passes = re.findall(r'Password: .*', fh.read())
-
     return {u.split()[1]: p.split()[1] for u, p in zip(users, passes)}
 
 def authenticate():
@@ -42,7 +45,7 @@ def authenticate():
             break
         print("Invalid username.")
     else:
-        sys.exit()
+        sys.exit("Too many invalid attempts. Exiting.")
 
     for _ in range(3):
         password = input("password: ")
@@ -50,14 +53,13 @@ def authenticate():
             print("Authorization Granted.")
             return username, password
         print("Invalid password.")
-    sys.exit()
+    sys.exit("Too many invalid attempts. Exiting.")
 
 # ---------------- SERVER CONF ---------------- #
 
 def server_conf():
-    with open('dfc.conf', 'r', encoding='cp1252') as fh:
+    with open(CONFIG_PATH, 'r', encoding='cp1252') as fh:
         params = re.findall(r'DFS.*', fh.read())
-
     servers = []
     for p in params:
         host, port = p.split()[1].split(':')
@@ -69,7 +71,6 @@ def server_conf():
 def split_file(filename, buf):
     with open(filename + '.txt', 'rb') as f:
         data = f.read()
-
     for i in range(4):
         with open(f"{filename}_{i+1}.txt", 'wb') as out:
             out.write(data[i*buf:(i+1)*buf])
@@ -91,7 +92,6 @@ def recv_chunks(conn, store, lock):
         bufsize = int(conn.recv(1024).decode())
         name1 = conn.recv(1024).decode()
         data1 = conn.recv(bufsize)
-
         with lock:
             store[name1] = data1
 
@@ -99,11 +99,10 @@ def recv_chunks(conn, store, lock):
 
         name2 = conn.recv(1024).decode()
         data2 = conn.recv(bufsize)
-
         with lock:
             store[name2] = data2
-    except:
-        pass
+    except Exception as e:
+        print("Error receiving chunks:", e)
 
 # ---------------- CLIENT ---------------- #
 
@@ -114,14 +113,16 @@ def client():
     conns = []
     names = ['DFS1', 'DFS2', 'DFS3', 'DFS4']
 
+    # Connect to DFS servers
     for i, s in enumerate(servers):
         try:
             c = socket.socket()
             c.settimeout(5)
             c.connect(s)
             c.send(username.encode())
+            time.sleep(0.1)
             c.send(password.encode())
-            print(c.recv(1024).decode().strip())
+            print(f"Client connected from {names[i]}: {c.recv(1024).decode().strip()}")
             conns.append(c)
         except:
             print(f"{names[i]} unavailable")
@@ -129,9 +130,13 @@ def client():
 
     command = input("Command [put|get|list]: ").lower()
 
+    # Send command to all connected servers
     for c in conns:
         if c:
-            c.send(command.encode())
+            try:
+                c.send(command.encode())
+            except:
+                pass
 
     # ---------------- PUT ---------------- #
     if command == 'put':
@@ -145,12 +150,17 @@ def client():
         for i, c in enumerate(conns):
             if not c:
                 continue
-            c.send(str(buf).encode())
-            for chunk in pairs[i]:
-                c.send(chunk.encode())
-                time.sleep(0.2)
-                c.send(open(chunk, 'rb').read())
+            try:
+                c.send(str(buf).encode())
+                for chunk in pairs[i]:
+                    time.sleep(0.1)
+                    c.send(chunk.encode())
+                    time.sleep(0.1)
+                    c.send(open(chunk, 'rb').read())
+            except Exception as e:
+                print(f"Error sending to server {i+1}:", e)
 
+        # Clean up temp chunks
         for i in range(1, 5):
             os.remove(f"{filename}_{i}.txt")
 
@@ -162,12 +172,15 @@ def client():
 
         for c in conns:
             if c:
-                c.send(filename.encode())
+                try:
+                    c.send(filename.encode())
+                except:
+                    pass
 
         store = {}
         lock = threading.Lock()
-
         threads = []
+
         for c in conns:
             if c:
                 t = threading.Thread(target=recv_chunks, args=(c, store, lock))
@@ -184,7 +197,7 @@ def client():
                     out.write(store[f"{filename}_{i}.txt"])
             print("GET successful.")
         else:
-            print("GET failed.")
+            print("GET failed. Not all chunks received.")
 
     # ---------------- LIST ---------------- #
     elif command == 'list':

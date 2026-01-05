@@ -5,52 +5,56 @@ Distributed File System
 Server 4
 Fonyuy Berka
 Jan 2026
-Modified: Fixed server root directory
 """
 
-# modules
+# =========================
+# MODULES
+# =========================
 import os
 import re
 import sys
 import time
 import socket
-import glob
 import pickle
 
-# ================= SERVER ROOT (DFS4) =================
-SERVER_ROOT = r"C:\Users\HP\Desktop\Servers\Server 4"
-os.makedirs(SERVER_ROOT, exist_ok=True)
-os.chdir(SERVER_ROOT)
-# ======================================================
+# =========================
+# STORAGE ROOT (DFS4)
+# =========================
+STORAGE_ROOT = r"C:\Users\HP\Desktop\Servers\Server 4"
+os.makedirs(STORAGE_ROOT, exist_ok=True)
 
-
-# function to check port number assignment
+# =========================
+# ARGUMENT CHECK
+# =========================
 def check_args():
-
     if len(sys.argv) != 2:
         print("ERROR: Must supply port number \nUSAGE: py dfs4.py 10004")
         sys.exit()
-
     try:
-        if int(sys.argv[1]) != 10004:
+        port = int(sys.argv[1])
+        if port != 10004:
             print("ERROR: Port number must be 10004")
             sys.exit()
-        return int(sys.argv[1])
+        return port
     except ValueError:
         print("ERROR: Port number must be a number.")
         sys.exit()
 
-check_args()
+server_port = check_args()
 
-
-# get authentication parameters
+# =========================
+# AUTH PARAMETERS
+# =========================
 def auth_params():
     BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    config_file = os.path.join(BASE_DIR, 'dfs.conf')
+    config_file = os.path.join(BASE_DIR, 'DFC', 'dfc.conf')
+
+    if not os.path.exists(config_file):
+        print(f"ERROR: {config_file} not found")
+        sys.exit()
 
     with open(config_file, 'r', encoding='cp1252') as fh:
         users = re.findall(r'Username: .*', fh.read())
-
     with open(config_file, 'r', encoding='cp1252') as fh:
         passes = re.findall(r'Password: .*', fh.read())
 
@@ -61,170 +65,106 @@ def auth_params():
     auth_dict = dict(zip(usernames, passwords))
     return auth_dict
 
-
-
-# authorize client
-def client_auth(auth_dict, username, password):
-
+# =========================
+# CLIENT AUTH
+# =========================
+def client_auth(username, password):
     if username in auth_dict and auth_dict[username] == password:
-        response = 'Authorization Granted.\n'
-        print(response)
-        conn.send(response.encode())
+        conn.send(b"Authorization Granted.\n")
+        print("Authorization Granted.")
     else:
-        response = 'Authorization Denied.\n'
-        print(response)
-        conn.send(response.encode())
-        sys.exit()
+        conn.send(b"Authorization Denied.\n")
+        conn.close()
+        return False
+    return True
 
-
-# creates new directory for user
+# =========================
+# CREATE USER DIRECTORY
+# =========================
 def new_dir(username):
+    user_dir = os.path.join(STORAGE_ROOT, username)
+    os.makedirs(user_dir, exist_ok=True)
+    return user_dir
 
-    global new_dir_path
-    new_dir_path = os.path.join(SERVER_ROOT, username)
-
-    if not os.path.isdir(new_dir_path):
-        os.makedirs(new_dir_path, exist_ok=True)
-        print(f"Created user directory: {new_dir_path}")
-
-    return new_dir_path
-
-
-# PUT files
-def put(new_dir_path):
-
+# =========================
+# PUT FILE
+# =========================
+def put(user_dir):
     buffersize = int(conn.recv(2048).decode())
-    print('Buffer size:', buffersize)
+    print("Buffer size:", buffersize)
 
     name1 = conn.recv(1024).decode()
-    chunk1 = conn.recv(buffersize).decode()
-    print('Receiving', name1)
-
+    chunk1 = conn.recv(buffersize)
     file_folder = name1.split('_')[0]
-    folder_path = os.path.join(new_dir_path, file_folder)
+    folder_path = os.path.join(user_dir, file_folder)
     os.makedirs(folder_path, exist_ok=True)
-
-    with open(os.path.join(folder_path, name1), 'w') as fh:
+    with open(os.path.join(folder_path, name1), 'wb') as fh:
         fh.write(chunk1)
-
-    conn.send(b'Chunk 1 successfully transferred.\n')
+    conn.send(b"Chunk 1 transferred.\n")
 
     name2 = conn.recv(1024).decode()
-    chunk2 = conn.recv(buffersize).decode()
-    print('Receiving', name2)
-
-    with open(os.path.join(folder_path, name2), 'w') as fh:
+    chunk2 = conn.recv(buffersize)
+    with open(os.path.join(folder_path, name2), 'wb') as fh:
         fh.write(chunk2)
+    conn.send(b"Chunk 2 transferred.\n")
 
-    conn.send(b'Chunk 2 successfully transferred.\n')
-    sys.exit()
+# =========================
+# LIST FILES
+# =========================
+def list_files(user_dir):
+    files_list = []
+    for root, _, files in os.walk(user_dir):
+        files_list.extend(files)
+    conn.send(pickle.dumps(files_list))
 
-
-# LIST files
-def list_files(username):
-
-    user_dir = os.path.join(SERVER_ROOT, username)
-
-    if not os.path.exists(user_dir):
-        conn.send(b'There are no files yet.')
-        return
-
-    folders = next(os.walk(user_dir))[1]
-    if not folders:
-        conn.send(b'There are no files yet.')
-        return
-
-    filenames = []
-    for folder in folders:
-        filenames.extend(os.listdir(os.path.join(user_dir, folder)))
-
-    if not filenames:
-        conn.send(b'There are no files yet.')
-        return
-
-    with open('filenames.txt', 'w') as fh:
-        for f in filenames:
-            fh.write(f + '\n')
-
-    with open('filenames.txt', 'rb') as fh:
-        conn.send(fh.read())
-
-    os.remove('filenames.txt')
-
-
-# GET files
-def get(username):
-
+# =========================
+# GET FILE
+# =========================
+def get(user_dir):
     filename = conn.recv(1024).decode()
-    user_dir = os.path.join(SERVER_ROOT, username)
     file_dir = os.path.join(user_dir, filename)
-
     if not os.path.isdir(file_dir):
-        conn.send(b'No such file exists.\n')
-        sys.exit()
-
+        conn.send(b"ERROR: File not found")
+        return
     chunks = os.listdir(file_dir)
-    name1, name2 = chunks
+    for chunk in chunks:
+        chunk_path = os.path.join(file_dir, chunk)
+        buffersize = os.path.getsize(chunk_path) + 4
+        conn.send(str(buffersize).encode())
+        time.sleep(0.2)
+        conn.send(chunk.encode())
+        time.sleep(0.2)
+        with open(chunk_path, 'rb') as f:
+            conn.send(f.read())
 
-    chunk1_path = os.path.join(file_dir, name1)
-    chunk2_path = os.path.join(file_dir, name2)
-
-    buffersize = os.stat(chunk1_path).st_size + 4
-    conn.send(str(buffersize).encode())
-    time.sleep(1)
-
-    conn.send(name1.encode())
-    time.sleep(0.5)
-    conn.send(open(chunk1_path, 'rb').read())
-
-    status = conn.recv(1024).decode()
-    if status == 'Transfer incomplete':
-        conn.send(name2.encode())
-        time.sleep(0.5)
-        conn.send(open(chunk2_path, 'rb').read())
-        conn.recv(1024)
-
-    sys.exit()
-
-
-# ================= RUN SERVER =================
-
-server_name = '127.0.0.1'
-server_port = int(sys.argv[1])
-
+# =========================
+# SERVER LOOP
+# =========================
 server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-server_socket.bind((server_name, server_port))
+server_socket.bind(("0.0.0.0", server_port))
 server_socket.listen(5)
+print(f"DFS4 running on port {server_port}")
+print(f"Storage root: {STORAGE_ROOT}")
 
-print('DFS4 listening on port', server_port)
-print('Serving directory:', SERVER_ROOT)
+auth_params()
 
 while True:
     conn, addr = server_socket.accept()
-    print('Client connected.')
-
-    username = conn.recv(2048).decode()
-    password = conn.recv(2048).decode()
-
-    auth_params()
-    client_auth(auth_dict, username, password)
-
-    new_dir(username)
-
-    command = conn.recv(1024).decode()
-
-    if command == 'put':
-        put(new_dir_path)
-    elif command == 'list':
-        list_files(username)
-        answer = conn.recv(1024).decode()
-        if answer == 'get':
-            get(username)
-        elif answer == 'put':
-            put(new_dir_path)
-    elif command == 'get':
-        get(username)
-    else:
-        sys.exit()
-
-conn.close()
+    print("Client connected from", addr)
+    try:
+        username = conn.recv(2048).decode()
+        password = conn.recv(2048).decode()
+        if not client_auth(username, password):
+            continue
+        user_dir = new_dir(username)
+        command = conn.recv(1024).decode().lower()
+        if command == "put":
+            put(user_dir)
+        elif command == "list":
+            list_files(user_dir)
+        elif command == "get":
+            get(user_dir)
+    except Exception as e:
+        print("Error:", e)
+    finally:
+        conn.close()
