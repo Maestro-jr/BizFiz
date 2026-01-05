@@ -23,6 +23,7 @@ import pickle
 # STORAGE ROOT (SERVER 1)
 # ========================
 STORAGE_ROOT = r"C:\Users\HP\Desktop\Servers\Server 1"
+CONF_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'dfs.conf')
 
 # ========================
 # ARGUMENT CHECK
@@ -131,14 +132,13 @@ def authenticate(conn):
 		conn.send(b"ERROR")
 		return None
 
-	with open("dfs.conf", "r") as f:
+	with open(CONF_FILE, "r") as f:
 		for line in f:
 			user, pwd = line.split()
 			if user == username and pwd == password:
 				conn.send(b"OK")
 				return username
 
-	conn.send(b"ERROR")
 	return None
 
 # ========================

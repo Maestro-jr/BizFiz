@@ -44,20 +44,22 @@ check_args()
 # AUTH PARAMETERS
 # =========================
 def auth_params():
-	config_file = 'dfs.conf'
+    BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    config_file = os.path.join(BASE_DIR, 'dfs.conf')
 
-	with open(config_file, 'r', encoding='cp1252') as fh:
-		users = re.findall(r'Username: .*', fh.read())
+    with open(config_file, 'r', encoding='cp1252') as fh:
+        users = re.findall(r'Username: .*', fh.read())
 
-	with open(config_file, 'r', encoding='cp1252') as fh:
-		passes = re.findall(r'Password: .*', fh.read())
+    with open(config_file, 'r', encoding='cp1252') as fh:
+        passes = re.findall(r'Password: .*', fh.read())
 
-	usernames = [u.split()[1] for u in users]
-	passwords = [p.split()[1] for p in passes]
+    usernames = [u.split()[1] for u in users]
+    passwords = [p.split()[1] for p in passes]
 
-	global auth_dict
-	auth_dict = dict(zip(usernames, passwords))
-	return auth_dict
+    global auth_dict
+    auth_dict = dict(zip(usernames, passwords))
+    return auth_dict
+
 
 # =========================
 # CLIENT AUTH
