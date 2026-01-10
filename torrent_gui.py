@@ -11,7 +11,7 @@ from math import floor
 from typing import Dict, List, Optional
 
 # noinspection PyUnresolvedReferences
-from PyQt5.QtCore import Qt, QThread, pyqtSignal
+from PyQt5.QtCore import Qt, QThread, pyqtSignal, QTimer
 # noinspection PyUnresolvedReferences
 from PyQt5.QtGui import QIcon, QFont, QDropEvent
 # noinspection PyUnresolvedReferences
@@ -232,6 +232,9 @@ class TorrentListWidgetItem(QWidget):
         self._progress_bar = QProgressBar()
         self._progress_bar.setFixedHeight(15)
         self._progress_bar.setMaximum(1000)
+        # Force progress bar to always show text and percentage
+        self._progress_bar.setTextVisible(True)
+        self._progress_bar.setFormat('%p%')
         vbox.addWidget(self._progress_bar)
 
         self._lower_status_label = QLabel()
@@ -260,6 +263,9 @@ class TorrentListWidgetItem(QWidget):
         self._update()
 
     def _update(self):
+        if self._state is None:
+            return
+
         state = self._state
 
         self._name_label.setText(state.suggested_name)
@@ -271,7 +277,11 @@ class TorrentListWidgetItem(QWidget):
         status_text += ', Ratio: {:.1f}'.format(state.ratio)
         self._upper_status_label.setText(status_text)
 
-        self._progress_bar.setValue(floor(state.progress * 1000))
+        # CRITICAL FIX: Ensure progress bar updates properly
+        progress_value = floor(state.progress * 1000)
+        self._progress_bar.setValue(progress_value)
+        # Force repaint to ensure visual update
+        self._progress_bar.repaint()
 
         if self.waiting_control_action:
             status_text = 'Waiting'
@@ -288,7 +298,7 @@ class TorrentListWidgetItem(QWidget):
                 status_text += ' on {}'.format(humanize_speed(state.download_speed))
             eta_seconds = state.eta_seconds
             if eta_seconds is not None:
-                status_text += ', {} remaining'.format(humanize_time(eta_seconds) if eta_seconds is not None else None)
+                status_text += ', {} remaining'.format(humanize_time(eta_seconds))
         self._lower_status_label.setText(status_text)
 
 
@@ -364,7 +374,17 @@ class MainWindow(QMainWindow):
         control.torrent_changed.connect(self._update_torrent_item)
         control.torrent_removed.connect(self._remove_torrent_item)
 
+        # FIX: Add periodic UI refresh timer to ensure progress updates
+        self._refresh_timer = QTimer(self)
+        self._refresh_timer.timeout.connect(self._force_ui_refresh)
+        self._refresh_timer.start(100)  # Refresh every 100ms
+
         self.show()
+
+    def _force_ui_refresh(self):
+        """Force UI refresh to ensure progress bars update smoothly"""
+        # Process pending events to keep UI responsive
+        QApplication.processEvents()
 
     def _add_torrent_item(self, state: TorrentState):
         widget = TorrentListWidgetItem()
@@ -391,6 +411,9 @@ class MainWindow(QMainWindow):
             return
 
         widget = self._list_widget.itemWidget(self._torrent_to_item[state.info_hash])
+        if widget is None:
+            return
+
         if widget.state.paused != state.paused:
             widget.waiting_control_action = False
         widget.state = state
@@ -398,6 +421,9 @@ class MainWindow(QMainWindow):
         self._update_control_action_state()
 
     def _remove_torrent_item(self, info_hash: bytes):
+        if info_hash not in self._torrent_to_item:
+            return
+
         item = self._torrent_to_item[info_hash]
         self._list_widget.takeItem(self._list_widget.row(item))
         del self._torrent_to_item[info_hash]
@@ -410,7 +436,7 @@ class MainWindow(QMainWindow):
         self._remove_action.setEnabled(False)
         for item in self._list_widget.selectedItems():
             widget = self._list_widget.itemWidget(item)
-            if widget.waiting_control_action:
+            if widget is None or widget.waiting_control_action:
                 continue
 
             if widget.state.paused:
@@ -453,7 +479,7 @@ class MainWindow(QMainWindow):
     def _control_action_triggered(self, action):
         for item in self._list_widget.selectedItems():
             widget = self._list_widget.itemWidget(item)
-            if widget.waiting_control_action:
+            if widget is None or widget.waiting_control_action:
                 continue
 
             info_hash = item.data(Qt.UserRole)
@@ -468,6 +494,13 @@ class MainWindow(QMainWindow):
                                          '<p>Copyright &copy; 2016 Alexander Borzunov</p>'
                                          '<p>Icons are made by Google and Freepik from '
                                          '<a href="http://www.flaticon.com">www.flaticon.com</a></p>')
+
+    def closeEvent(self, event):
+        """Handle window close event properly"""
+        # Stop the refresh timer
+        self._refresh_timer.stop()
+        # Accept the close event
+        event.accept()
 
 
 class ControlManagerThread(QThread):
@@ -505,22 +538,42 @@ class ControlManagerThread(QThread):
             self._loop.run_forever()
 
     def stop(self):
+        """Properly stop the control thread and clean up all async tasks"""
         if self._stopping:
             return
         self._stopping = True
 
         async def stop_all():
-            """Properly stop both control server and manager"""
-            await asyncio.gather(
-                self._control_server.stop(),
-                self._control.stop(),
-                return_exceptions=True
-            )
+            """Stop all components in the correct order"""
+            try:
+                # Stop control server first
+                await self._control_server.stop()
+            except Exception as e:
+                logging.error(f"Error stopping control server: {e}")
 
-        stop_fut = asyncio.run_coroutine_threadsafe(stop_all(), self._loop)
-        stop_fut.add_done_callback(lambda fut: self._loop.call_soon_threadsafe(self._loop.stop))
+            try:
+                # Then stop control manager
+                await self._control.stop()
+            except Exception as e:
+                logging.error(f"Error stopping control manager: {e}")
 
-        self.wait()
+        # Schedule the stop coroutine
+        stop_future = asyncio.run_coroutine_threadsafe(stop_all(), self._loop)
+
+        # When stop completes, stop the event loop
+        def on_stop_complete(fut):
+            try:
+                fut.result()  # Raise any exceptions that occurred
+            except Exception as e:
+                logging.error(f"Error during shutdown: {e}")
+            finally:
+                # Stop the event loop on its own thread
+                self._loop.call_soon_threadsafe(self._loop.stop)
+
+        stop_future.add_done_callback(on_stop_complete)
+
+        # Wait for the thread to finish with a timeout
+        self.wait(5000)  # 5 second timeout
 
 
 def suggest_torrents(manager: ControlManager, filenames: List[str]):
@@ -549,7 +602,7 @@ def main():
     app = QApplication(sys.argv)
     app.setWindowIcon(load_icon('logo'))
 
-    # Fix: Create a new event loop instead of using get_event_loop()
+    # Create a new event loop for daemon check
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
 
@@ -557,7 +610,7 @@ def main():
         if loop.run_until_complete(find_another_daemon(args.filenames)):
             if not args.filenames:
                 QMessageBox.critical(None, 'Failed to start', 'Another program instance is already running')
-            return
+            return 0
     finally:
         loop.close()
 
@@ -569,7 +622,13 @@ def main():
 
     main_window.add_torrent_files(args.filenames)
 
-    return app.exec()
+    exit_code = app.exec()
+
+    # Ensure clean shutdown
+    control_thread.stop()
+    control_thread.wait(5000)  # Wait up to 5 seconds for clean shutdown
+
+    return exit_code
 
 
 if __name__ == '__main__':
